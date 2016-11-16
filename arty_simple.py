@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-import argparse
 import os
+import struct
+import argparse
 
 from litex.gen import *
 from litex.gen.genlib.resetsync import AsyncResetSynchronizer
@@ -13,6 +14,7 @@ from litex.soc.integration.soc_sdram import *
 from litex.soc.cores.flash import spi_flash
 from litex.soc.cores.uart.core import RS232PHY, UART
 from litex.soc.integration.builder import *
+from litex.soc.interconnect import wishbone
 from litex.soc.interconnect.wishbonebridge import WishboneStreamingBridge
 from litex.soc.interconnect.stream import *
 
@@ -24,12 +26,6 @@ from litedram.frontend.bist import LiteDRAMBISTChecker
 
 from liteeth.phy import LiteEthPHY
 from liteeth.core.mac import LiteEthMAC
-
-class UARTVirtualPhy:
-    def __init__(self):
-        self.sink = Endpoint([("data", 8)])
-        self.source = Endpoint([("data", 8)])
-
 
 class _CRG(Module):
     def __init__(self, platform):
@@ -119,7 +115,6 @@ class BaseSoC(SoCSDRAM):
     }
     csr_map.update(SoCSDRAM.csr_map)
 
-
     def __init__(self,
                  platform,
                  **kwargs):
@@ -130,7 +125,7 @@ class BaseSoC(SoCSDRAM):
             **kwargs)
 
         self.submodules.crg = _CRG(platform)
-        
+
 
         # sdram
         self.submodules.ddrphy = a7ddrphy.A7DDRPHY(platform.request("ddram"))
@@ -142,7 +137,6 @@ class BaseSoC(SoCSDRAM):
                             sdram_module.timing_settings,
                             controller_settings=ControllerSettings(cmd_buffer_depth=8))
 
-        
 class MiniSoC(BaseSoC):
     csr_map = {
         "ethphy": 30,
@@ -188,19 +182,92 @@ class MiniSoC(BaseSoC):
             s = s.upper()
             self.add_constant(s, e)
 
+class DbgSoC(MiniSoC):
+    csr_map = {
+        "uartdbg_phy": 24,
+        "uartdbg": 25,
+    }
+    csr_map.update(MiniSoC.csr_map)
+
+    interrupt_map = {
+        "uartdbg": 3,
+    }
+    interrupt_map.update(MiniSoC.interrupt_map)
+
+    mem_map = {
+        "gdbstub_rom": 0x20000000,
+    }
+    mem_map.update(MiniSoC.mem_map)
+
+    def __init__(self, platform, *args, gdbstub_rom_size=0x2000, **kwargs):
+        MiniSoC.__init__(self, platform, *args, **kwargs)
+
+        # gdbstub rom
+        self.gdbstub_rom_size = gdbstub_rom_size
+        self.submodules.gdbstub_rom = wishbone.SRAM(self.gdbstub_rom_size, read_only=True)
+        self.register_mem(
+            "gdbstub_rom", self.mem_map["gdbstub_rom"],
+            self.gdbstub_rom.bus, self.gdbstub_rom_size
+        )
+
+        self.submodules.uartdbg_phy = RS232PHY(platform.request("serial", 1),
+                                               self.clk_freq, self.uart_baudrate)
+        self.submodules.uartdbg = UART(self.uartdbg_phy)
+
+        # break button
+        prv = Signal(1, reset=1)
+        button = platform.request('user_btn', 0)
+        self.sync += [
+            prv.eq(button),
+            If(button & ~prv,
+                self.cpu_or_bridge.ext_break.eq(1),
+            ).Else(
+                self.cpu_or_bridge.ext_break.eq(0),
+            )
+        ]
+
+    def initialize_gdbstub_rom(self, data):
+        self.gdbstub_rom.mem.init = data
+
+class DbgBuilder(Builder):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.add_software_package(
+            "gdbstub",
+            os.path.join(os.path.abspath(os.path.dirname(__file__)), "gdbstub")
+        )
+
+    def _initialize_rom(self):
+        super()._initialize_rom()
+        bios_file = os.path.join(self.output_dir, "software", "gdbstub",
+                                 "gdbstub.bin")
+        if self.soc.gdbstub_rom_size:
+            with open(bios_file, "rb") as boot_file:
+                boot_data = []
+                while True:
+                    w = boot_file.read(4)
+                    if not w:
+                        break
+                    boot_data.append(struct.unpack(">I", w)[0])
+            self.soc.initialize_gdbstub_rom(boot_data)
+
 def main():
     parser = argparse.ArgumentParser(description="Arty LiteX SoC")
     builder_args(parser)
     soc_sdram_args(parser)
     parser.add_argument("--with-ethernet", action="store_true",
                         help="enable Ethernet support")
+    parser.add_argument("--with-debug", action="store_true",
+                        help="enable GDB support")
     parser.add_argument("--nocompile-gateware", action="store_true")
     args = parser.parse_args()
 
     platform = arty.Platform()
     cls = MiniSoC if args.with_ethernet else BaseSoC
+    cls = DbgSoC if args.with_debug else cls
+    clsbuild = DbgBuilder if args.with_debug else Builder
     soc = cls(platform, **soc_sdram_argdict(args))
-    builder = Builder(soc, output_dir="build",
+    builder = clsbuild(soc, output_dir="build",
                       compile_gateware=not args.nocompile_gateware,
                       csr_csv="test/csr.csv")
     vns = builder.build()
