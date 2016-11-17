@@ -100,7 +100,54 @@ class _CRG(Module):
             Instance("BUFG", i_I=eth_clk, o_O=platform.request("eth_ref_clk")),
         ]
 
-class BaseSoC(SoCSDRAM):
+class DbgSoC(SoCSDRAM):
+    csr_map = {
+        "uartdbg_phy": 14,
+        "uartdbg": 15,
+    }
+    csr_map.update(SoCSDRAM.csr_map)
+
+    interrupt_map = {
+        "uartdbg": 3,
+    }
+    interrupt_map.update(SoCSDRAM.interrupt_map)
+
+    mem_map = {
+        "gdbstub_rom": 0x20000000,
+    }
+    mem_map.update(SoCSDRAM.mem_map)
+
+    def __init__(self, platform, *args, gdbstub_rom_size=0x2000, **kwargs):
+        SoCSDRAM.__init__(self, platform, *args, **kwargs)
+
+        # gdbstub rom
+        self.gdbstub_rom_size = gdbstub_rom_size
+        self.submodules.gdbstub_rom = wishbone.SRAM(self.gdbstub_rom_size, read_only=True)
+        self.register_mem(
+            "gdbstub_rom", self.mem_map["gdbstub_rom"],
+            self.gdbstub_rom.bus, self.gdbstub_rom_size
+        )
+
+        self.submodules.uartdbg_phy = RS232PHY(platform.request("serial", 1),
+                                               self.clk_freq, self.uart_baudrate)
+        self.submodules.uartdbg = UART(self.uartdbg_phy)
+
+        # break button
+        prv = Signal(1, reset=1)
+        button = platform.request('user_btn', 0)
+        self.sync += [
+            prv.eq(button),
+            If(button & ~prv,
+                self.cpu_or_bridge.ext_break.eq(1),
+            ).Else(
+                self.cpu_or_bridge.ext_break.eq(0),
+            )
+        ]
+
+    def initialize_gdbstub_rom(self, data):
+        self.gdbstub_rom.mem.init = data
+
+class BaseSoC(DbgSoC):
     default_platform = "arty"
 
     csr_map = {
@@ -113,19 +160,18 @@ class BaseSoC(SoCSDRAM):
         "generator": 22,
         "checker":   23
     }
-    csr_map.update(SoCSDRAM.csr_map)
+    csr_map.update(DbgSoC.csr_map)
 
     def __init__(self,
                  platform,
                  **kwargs):
         clk_freq = 100*1000000
-        SoCSDRAM.__init__(self, platform, clk_freq,
+        DbgSoC.__init__(self, platform, clk_freq,
             integrated_rom_size=0x8000,
             integrated_sram_size=0x8000,
             **kwargs)
 
         self.submodules.crg = _CRG(platform)
-
 
         # sdram
         self.submodules.ddrphy = a7ddrphy.A7DDRPHY(platform.request("ddram"))
@@ -182,53 +228,6 @@ class MiniSoC(BaseSoC):
             s = s.upper()
             self.add_constant(s, e)
 
-class DbgSoC(MiniSoC):
-    csr_map = {
-        "uartdbg_phy": 24,
-        "uartdbg": 25,
-    }
-    csr_map.update(MiniSoC.csr_map)
-
-    interrupt_map = {
-        "uartdbg": 3,
-    }
-    interrupt_map.update(MiniSoC.interrupt_map)
-
-    mem_map = {
-        "gdbstub_rom": 0x20000000,
-    }
-    mem_map.update(MiniSoC.mem_map)
-
-    def __init__(self, platform, *args, gdbstub_rom_size=0x2000, **kwargs):
-        MiniSoC.__init__(self, platform, *args, **kwargs)
-
-        # gdbstub rom
-        self.gdbstub_rom_size = gdbstub_rom_size
-        self.submodules.gdbstub_rom = wishbone.SRAM(self.gdbstub_rom_size, read_only=True)
-        self.register_mem(
-            "gdbstub_rom", self.mem_map["gdbstub_rom"],
-            self.gdbstub_rom.bus, self.gdbstub_rom_size
-        )
-
-        self.submodules.uartdbg_phy = RS232PHY(platform.request("serial", 1),
-                                               self.clk_freq, self.uart_baudrate)
-        self.submodules.uartdbg = UART(self.uartdbg_phy)
-
-        # break button
-        prv = Signal(1, reset=1)
-        button = platform.request('user_btn', 0)
-        self.sync += [
-            prv.eq(button),
-            If(button & ~prv,
-                self.cpu_or_bridge.ext_break.eq(1),
-            ).Else(
-                self.cpu_or_bridge.ext_break.eq(0),
-            )
-        ]
-
-    def initialize_gdbstub_rom(self, data):
-        self.gdbstub_rom.mem.init = data
-
 class DbgBuilder(Builder):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -257,17 +256,13 @@ def main():
     soc_sdram_args(parser)
     parser.add_argument("--with-ethernet", action="store_true",
                         help="enable Ethernet support")
-    parser.add_argument("--with-debug", action="store_true",
-                        help="enable GDB support")
     parser.add_argument("--nocompile-gateware", action="store_true")
     args = parser.parse_args()
 
     platform = arty.Platform()
     cls = MiniSoC if args.with_ethernet else BaseSoC
-    cls = DbgSoC if args.with_debug else cls
-    clsbuild = DbgBuilder if args.with_debug else Builder
     soc = cls(platform, **soc_sdram_argdict(args))
-    builder = clsbuild(soc, output_dir="build",
+    builder = DbgBuilder(soc, output_dir="build",
                       compile_gateware=not args.nocompile_gateware,
                       csr_csv="test/csr.csv")
     vns = builder.build()
