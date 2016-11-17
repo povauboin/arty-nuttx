@@ -264,7 +264,7 @@ def main():
     soc = cls(platform, **soc_sdram_argdict(args))
     builder = DbgBuilder(soc, output_dir="build",
                       compile_gateware=not args.nocompile_gateware,
-                      csr_csv="test/csr.csv")
+                      csr_csv="build/csr.csv")
     vns = builder.build()
 
 if __name__ == "__main__":
