@@ -13,6 +13,7 @@ from litex.soc.integration.soc_core import mem_decoder
 from litex.soc.integration.soc_sdram import *
 from litex.soc.cores.flash import spi_flash
 from litex.soc.cores.uart.core import RS232PHY, UART
+from litex.soc.cores.spi import SPIMaster
 from litex.soc.integration.builder import *
 from litex.soc.interconnect import wishbone
 from litex.soc.interconnect.wishbonebridge import WishboneStreamingBridge
@@ -160,7 +161,8 @@ class BaseSoC(DbgSoC):
         "leds":      20,
         "rgb_leds":  21,
         "generator": 22,
-        "checker":   23
+        "checker":   23,
+        "spi":       24,
     }
     csr_map.update(DbgSoC.csr_map)
 
@@ -184,6 +186,9 @@ class BaseSoC(DbgSoC):
                             sdram_module.geom_settings,
                             sdram_module.timing_settings,
                             controller_settings=ControllerSettings(cmd_buffer_depth=8))
+
+        # spi
+        self.submodules.spi = SPIMaster(platform.request("spi"))
 
 class MiniSoC(BaseSoC):
     csr_map = {
