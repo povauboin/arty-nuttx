@@ -5,7 +5,6 @@ import argparse
 
 from litex.gen import *
 from litex.gen.genlib.resetsync import AsyncResetSynchronizer
-from litex.gen.fhdl.specials import Keep
 
 from litex.boards.platforms import arty
 
@@ -27,6 +26,8 @@ from litedram.frontend.bist import LiteDRAMBISTChecker
 
 from liteeth.phy import LiteEthPHY
 from liteeth.core.mac import LiteEthMAC
+
+from core_leds import RGBLeds
 
 class _CRG(Module):
     def __init__(self, platform):
@@ -187,8 +188,8 @@ class BaseSoC(DbgSoC):
                             sdram_module.timing_settings,
                             controller_settings=ControllerSettings(cmd_buffer_depth=8))
 
-        # spi
-        self.submodules.spi = SPIMaster(platform.request("spi"))
+        # leds
+        self.submodules.rgb_leds = RGBLeds(platform.request("rgb_leds"))
 
 class MiniSoC(BaseSoC):
     csr_map = {
@@ -216,11 +217,11 @@ class MiniSoC(BaseSoC):
         self.add_wb_slave(mem_decoder(self.mem_map["ethmac"]), self.ethmac.bus)
         self.add_memory_region("ethmac", self.mem_map["ethmac"] | self.shadow_base, 0x2000)
 
-        self.specials += [
-            Keep(self.ethphy.crg.cd_eth_rx.clk),
-            Keep(self.ethphy.crg.cd_eth_tx.clk)
-        ]
+        self.crg.cd_sys.clk.attr.add("keep")
+        self.ethphy.crg.cd_eth_rx.clk.attr.add("keep")
+        self.ethphy.crg.cd_eth_tx.clk.attr.add("keep")
 
+        self.platform.add_period_constraint(self.crg.cd_sys.clk, 40.0)
         self.platform.add_period_constraint(self.ethphy.crg.cd_eth_rx.clk, 40.0)
         self.platform.add_period_constraint(self.ethphy.crg.cd_eth_tx.clk, 40.0)
 
