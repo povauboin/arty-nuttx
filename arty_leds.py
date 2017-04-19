@@ -122,6 +122,7 @@ class DbgSoC(SoCSDRAM):
     def __init__(self, platform, *args, gdbstub_rom_size=0x2000, **kwargs):
         SoCSDRAM.__init__(self, platform, *args,
                           cpu_debug_address=self.mem_map["gdbstub_rom"],
+                          csr_data_width=32,
                           **kwargs)
 
         # gdbstub rom

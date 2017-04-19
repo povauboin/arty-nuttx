@@ -5,7 +5,6 @@ import argparse
 
 from litex.gen import *
 from litex.gen.genlib.resetsync import AsyncResetSynchronizer
-from litex.gen.fhdl.specials import Keep
 
 from litex.boards.platforms import arty
 
@@ -121,6 +120,7 @@ class DbgSoC(SoCSDRAM):
     def __init__(self, platform, *args, gdbstub_rom_size=0x2000, **kwargs):
         SoCSDRAM.__init__(self, platform, *args,
                           cpu_debug_address=self.mem_map["gdbstub_rom"],
+                          csr_data_width=32,
                           **kwargs)
 
         # gdbstub rom
@@ -187,9 +187,6 @@ class BaseSoC(DbgSoC):
                             sdram_module.timing_settings,
                             controller_settings=ControllerSettings(cmd_buffer_depth=8))
 
-        # spi
-        self.submodules.spi = SPIMaster(platform.request("spi"))
-
 class MiniSoC(BaseSoC):
     csr_map = {
         "ethphy": 30,
@@ -216,11 +213,11 @@ class MiniSoC(BaseSoC):
         self.add_wb_slave(mem_decoder(self.mem_map["ethmac"]), self.ethmac.bus)
         self.add_memory_region("ethmac", self.mem_map["ethmac"] | self.shadow_base, 0x2000)
 
-        self.specials += [
-            Keep(self.ethphy.crg.cd_eth_rx.clk),
-            Keep(self.ethphy.crg.cd_eth_tx.clk)
-        ]
+        self.crg.cd_sys.clk.attr.add("keep")
+        self.ethphy.crg.cd_eth_rx.clk.attr.add("keep")
+        self.ethphy.crg.cd_eth_tx.clk.attr.add("keep")
 
+        self.platform.add_period_constraint(self.crg.cd_sys.clk, 40.0)
         self.platform.add_period_constraint(self.ethphy.crg.cd_eth_rx.clk, 40.0)
         self.platform.add_period_constraint(self.ethphy.crg.cd_eth_tx.clk, 40.0)
 
