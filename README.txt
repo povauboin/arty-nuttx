@@ -83,3 +83,4 @@ Debug
     Manual break (press button)
 
     lm32-elf-gdb -n ../nuttx/nuttx
+    (gdb) target remote /dev/ttyUSB2
